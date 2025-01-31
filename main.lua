@@ -1,3 +1,11 @@
+eDebug=false
+if arg[2] == "debug" then
+	eDebug=true
+    require("lldebugger").start()
+	
+end
+
+
 -- Constants for walkability states
 local NON_WALKABLE = 0
 local WALKABLE = 1
@@ -187,4 +195,15 @@ function saveCollisionData(data, path)
     end
     serialized = serialized .. "  }\n}"
     love.filesystem.write(path, serialized)
+end
+
+
+local love_errorhandler = love.errorhandler
+
+function love.errorhandler(msg)
+    if lldebugger then
+        error(msg, 2)
+    else
+        return love_errorhandler(msg)
+    end
 end
