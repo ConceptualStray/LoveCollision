@@ -9,43 +9,73 @@ local NON_WALKABLE = 0
 local WALKABLE = 1
 local MIXED = 2
 
+-- State for the application
+local state = {
+    imageData = nil,
+    collisionData = nil,
+    currentX = 0,
+    currentY = 0,
+    isProcessing = false,
+    progress = 0,
+    status = "Drag and drop a JPG file to process", -- Initial status message
+    outputFilePath = nil -- Path to save the collision data
+}
+
 function love.load()
-    -- Load the image data
-    local imagePath = "collisionTest.jpg" -- Replace with your image path
-    local imageData = love.image.newImageData(imagePath)
-
-    -- Image dimensions
-    local width, height = imageData:getWidth(), imageData:getHeight()
-    local cellSize = 32
-
-    -- Collision data structure
-    local collisionData = {
-        width = width,
-        height = height,
-        cellSize = cellSize,
-        cells = {} -- 2D grid: cells[gridX][gridY] = cell data
-    }
-
-    -- State for incremental processing
-    local state = {
-        imageData = imageData,
-        collisionData = collisionData,
-        currentX = 0,
-        currentY = 0,
-        isProcessing = true,
-        progress = 0
-    }
-
-    -- Save state to global for access in update/draw
-    collisionState = state
-
     -- Set up debug font
     love.graphics.setNewFont(12)
 end
 
+function love.filedropped(file)
+    -- Reset state when a new file is dropped
+    state.imageData = nil
+    state.collisionData = nil
+    state.currentX = 0
+    state.currentY = 0
+    state.isProcessing = false
+    state.progress = 0
+    state.status = "Loading image..."
+    state.outputFilePath = nil
+
+    -- Load the dropped image file
+    local success, err = pcall(function()
+        -- Read the file data
+        local fileData = file:read()
+        local filePath = file:getFilename()
+
+        -- Use love.filesystem.newFileData to create a FileData object
+        local imageFileData = love.filesystem.newFileData(fileData, filePath)
+
+        -- Load the image data
+        local imageData = love.image.newImageData(imageFileData)
+        state.imageData = imageData
+
+        -- Initialize collision data
+        local width, height = imageData:getWidth(), imageData:getHeight()
+        local cellSize = 32
+        state.collisionData = {
+            width = width,
+            height = height,
+            cellSize = cellSize,
+            cells = {} -- 2D grid: cells[gridX][gridY] = cell data
+        }
+
+        -- Generate the output file path
+        local baseName = filePath:match("(.+)%..+$") -- Remove the file extension
+        state.outputFilePath = baseName .. ".bin"
+
+        -- Start processing
+        state.isProcessing = true
+        state.status = "Processing..."
+    end)
+
+    if not success then
+        state.status = "Failed to load image: " .. tostring(err)
+    end
+end
+
 function love.update(dt)
-    local state = collisionState
-    if not state.isProcessing then return end
+    if not state.isProcessing or not state.imageData then return end
 
     -- Process a chunk of pixels (e.g., 32x32 cells per frame)
     local chunkSize = 32 -- Number of cells to process per frame
@@ -105,7 +135,9 @@ function love.update(dt)
             state.currentY = state.currentY + state.collisionData.cellSize
             if state.currentY >= state.imageData:getHeight() then
                 state.isProcessing = false
-                print("Processing complete!")
+                state.status = "Saving collision data..."
+                saveCollisionData(state.collisionData, state.outputFilePath)
+                state.status = "Complete! Collision data saved to " .. state.outputFilePath
                 break
             end
         end
@@ -118,64 +150,62 @@ function love.update(dt)
 end
 
 function love.draw()
-    local state = collisionState
-
     -- Draw the grid and pixel data for debugging
-    local cellSize = state.collisionData.cellSize
-    local windowWidth, windowHeight = love.graphics.getDimensions()
-    local scaleX = windowWidth / state.collisionData.width
-    local scaleY = windowHeight / state.collisionData.height
-    local scale = math.min(scaleX, scaleY)
+    if state.imageData then
+        local cellSize = state.collisionData.cellSize
+        local windowWidth, windowHeight = love.graphics.getDimensions()
+        local scaleX = windowWidth / state.collisionData.width
+        local scaleY = windowHeight / state.collisionData.height
+        local scale = math.min(scaleX, scaleY)
 
-    love.graphics.scale(scale, scale)
+        love.graphics.scale(scale, scale)
 
-    for gridX, row in pairs(state.collisionData.cells) do
-        for gridY, cell in pairs(row) do
-            local x = (gridX - 1) * cellSize
-            local y = (gridY - 1) * cellSize
+        for gridX, row in pairs(state.collisionData.cells) do
+            for gridY, cell in pairs(row) do
+                local x = (gridX - 1) * cellSize
+                local y = (gridY - 1) * cellSize
 
-            -- Draw cell background based on walkability
-            if cell.isWalkable == NON_WALKABLE then
-                love.graphics.setColor(1, 0, 0) -- Red for non-walkable
-            elseif cell.isWalkable == MIXED then
-                love.graphics.setColor(1, 1, 0) -- Yellow for mixed
-            else
-                love.graphics.setColor(0, 1, 0) -- Green for walkable
-            end
-            love.graphics.rectangle("fill", x, y, cellSize, cellSize)
+                -- Draw cell background based on walkability
+                if cell.isWalkable == NON_WALKABLE then
+                    love.graphics.setColor(1, 0, 0) -- Red for non-walkable
+                elseif cell.isWalkable == MIXED then
+                    love.graphics.setColor(1, 1, 0) -- Yellow for mixed
+                else
+                    love.graphics.setColor(0, 1, 0) -- Green for walkable
+                end
+                love.graphics.rectangle("fill", x, y, cellSize, cellSize)
 
-            -- Draw individual walkable pixels if the cell is mixed
-            if cell.isWalkable == MIXED then
-                for _, pixel in ipairs(cell.data) do
-                    local px, py = pixel[1], pixel[2]
-                    love.graphics.setColor(1, 1, 1) -- White for walkable pixels
-                    love.graphics.points(px, py)
+                -- Draw individual walkable pixels if the cell is mixed
+                if cell.isWalkable == MIXED then
+                    for _, pixel in ipairs(cell.data) do
+                        local px, py = pixel[1], pixel[2]
+                        love.graphics.setColor(1, 1, 1) -- White for walkable pixels
+                        love.graphics.points(px, py)
+                    end
                 end
             end
         end
+
+        -- Draw debug information
+        love.graphics.setColor(1, 1, 1) -- White
+        local debugText = string.format(
+            "Status: %s\nProgress: %.2f%%\nCells Processed: %d",
+            sanitizeUTF8(state.status),
+            state.progress * 100,
+            #state.collisionData.cells * #state.collisionData.cells[1]
+        )
+        love.graphics.print(debugText, 10, 10)
+    else
+        -- Display a message if no image is loaded
+        love.graphics.setColor(1, 1, 1) -- White
+        love.graphics.print(sanitizeUTF8(state.status), 10, 10)
     end
-
-    -- Draw debug information
-    love.graphics.setColor(1, 1, 1) -- White
-    local debugText = string.format(
-        "Progress: %.2f%%\nCells Processed: %d",
-        state.progress * 100,
-        #state.collisionData.cells * #state.collisionData.cells[1]
-    )
-    love.graphics.print(debugText, 10, 10)
-end
-
-function love.keypressed(key)
-    -- Save the collision data to a custom text file
-    local outputPath = "collision_data.bin"
-    saveCollisionData(collisionState.collisionData, outputPath)
-    print("Collision data saved to " .. outputPath)
 end
 
 function saveCollisionData(data, path)
     local file = io.open(path, "w")
     if not file then
-        print("Failed to open file for writing: " .. path)
+        state.status = "Failed to save collision data: " .. path
         return
     end
 
@@ -185,7 +215,12 @@ function saveCollisionData(data, path)
             local binaryString = ""
             for py = cell.y, cell.y + data.cellSize - 1 do
                 for px = cell.x, cell.x + data.cellSize - 1 do
-                    local r, g, b, a = state.imageData:getPixel(px, py)
+                    -- Clamp pixel coordinates to the image bounds
+                    local clampedX = math.min(math.max(px, 0), state.imageData:getWidth() - 1)
+                    local clampedY = math.min(math.max(py, 0), state.imageData:getHeight() - 1)
+
+                    -- Get the pixel color
+                    local r, g, b, a = state.imageData:getPixel(clampedX, clampedY)
                     local isWhite = (r == 1 and g == 1 and b == 1)
                     binaryString = binaryString .. (isWhite and "1" or "0")
                 end
@@ -196,6 +231,13 @@ function saveCollisionData(data, path)
     end
 
     file:close()
+end
+
+-- Helper function to sanitize UTF-8 strings
+function sanitizeUTF8(str)
+    if not str then return "" end
+    -- Remove invalid UTF-8 characters
+    return str:gsub("[\128-\255]", "?")
 end
 
 local love_errorhandler = love.errorhandler
