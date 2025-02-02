@@ -24,6 +24,7 @@ local state = {
 function love.load()
     -- Set up debug font
     love.graphics.setNewFont(12)
+	FILE_BUFFER =''
 end
 
 function love.filedropped(file)
@@ -57,7 +58,6 @@ function love.filedropped(file)
             width = width,
             height = height,
             cellSize = cellSize,
-            cells = {} -- 2D grid: cells[gridX][gridY] = cell data
         }
 
         -- Generate the output file path
@@ -86,9 +86,7 @@ function love.update(dt)
         local gridY = math.floor(state.currentY / state.collisionData.cellSize) + 1
 
         -- Initialize the grid row if it doesn't exist
-        if not state.collisionData.cells[gridX] then
-            state.collisionData.cells[gridX] = {}
-        end
+
 
         -- Create the cell
         local cell = {
@@ -103,7 +101,7 @@ function love.update(dt)
         for py = state.currentY, math.min(state.currentY + state.collisionData.cellSize - 1, state.imageData:getHeight() - 1) do
             for px = state.currentX, math.min(state.currentX + state.collisionData.cellSize - 1, state.imageData:getWidth() - 1) do
                 local r, g, b, a = state.imageData:getPixel(px, py)
-                local isWhite = (r == 1 and g == 1 and b == 1)
+                local isWhite = not(r == 0 and g == 0 and b == 0)
                 local isBlack = (r == 0 and g == 0 and b == 0)
 
                 if isWhite then hasWhite = true end
@@ -126,7 +124,28 @@ function love.update(dt)
         end
 
         -- Add the cell to the collision data
-        state.collisionData.cells[gridX][gridY] = cell
+
+
+        -- Append the cell data to the FILE_BUFFER
+        if cell.isWalkable == NON_WALKABLE then
+            FILE_BUFFER=FILE_BUFFER .. string.format("%d,%d,%d\n", gridX - 1, gridY - 1, NON_WALKABLE)
+        elseif cell.isWalkable == WALKABLE then
+           FILE_BUFFER=FILE_BUFFER .. string.format("%d,%d,%d\n", gridX - 1, gridY - 1, WALKABLE)
+        else
+            -- For mixed cells, collect pixel data and perform run-length encoding
+            local pixels = {}
+            for py = cell.y, cell.y + state.collisionData.cellSize - 1 do
+                for px = cell.x, cell.x + state.collisionData.cellSize - 1 do
+                    local clampedX = math.min(math.max(px, 0), state.imageData:getWidth() - 1)
+                    local clampedY = math.min(math.max(py, 0), state.imageData:getHeight() - 1)
+                    local r, g, b, a = state.imageData:getPixel(clampedX, clampedY)
+                    local isWhite = (r == 1 and g == 1 and b == 1)
+                    table.insert(pixels, isWhite and 1 or 0)
+                end
+            end
+            local encodedPixels = runLengthEncode(pixels)
+            FILE_BUFFER=FILE_BUFFER .. string.format("%d,%d,%s\n", gridX - 1, gridY - 1, encodedPixels)
+        end
 
         -- Move to the next cell
         state.currentX = state.currentX + state.collisionData.cellSize
@@ -136,7 +155,7 @@ function love.update(dt)
             if state.currentY >= state.imageData:getHeight() then
                 state.isProcessing = false
                 state.status = "Saving collision data..."
-                saveCollisionData(state.collisionData, state.outputFilePath)
+                saveCollisionData(FILE_BUFFER, state.outputFilePath)
                 state.status = "Complete! Collision data saved to " .. state.outputFilePath
                 break
             end
@@ -151,7 +170,31 @@ end
 
 function love.draw()
     -- Draw the grid and pixel data for debugging
-    if state.imageData then
+    if state.outputFilePath then
+        -- Read the collision data from the file
+        local file = io.open(state.outputFilePath, "r")
+        if not file then
+            love.graphics.setColor(1, 0, 0) -- Red for error
+            love.graphics.print("Failed to open collision data file: " .. state.outputFilePath, 10, 10)
+            return
+        end
+
+        -- Parse the file contents
+        local collisionData = {}
+        for line in file:lines() do
+            local gridX, gridY, value = line:match("(%d+),(%d+),(.+)")
+            if gridX and gridY and value then
+                gridX = tonumber(gridX)
+                gridY = tonumber(gridY)
+                if not collisionData[gridX] then
+                    collisionData[gridX] = {}
+                end
+                collisionData[gridX][gridY] = value
+            end
+        end
+        file:close()
+
+        -- Draw the grid based on the parsed collision data
         local cellSize = state.collisionData.cellSize
         local windowWidth, windowHeight = love.graphics.getDimensions()
         local scaleX = windowWidth / state.collisionData.width
@@ -160,27 +203,47 @@ function love.draw()
 
         love.graphics.scale(scale, scale)
 
-        for gridX, row in pairs(state.collisionData.cells) do
-            for gridY, cell in pairs(row) do
-                local x = (gridX - 1) * cellSize
-                local y = (gridY - 1) * cellSize
+        for gridX, row in pairs(collisionData) do
+            for gridY, value in pairs(row) do
+                local x = (gridX) * cellSize
+                local y = (gridY) * cellSize
 
-                -- Draw cell background based on walkability
-                if cell.isWalkable == NON_WALKABLE then
+                -- Determine cell color based on the value
+                if value == tostring(NON_WALKABLE) then
                     love.graphics.setColor(1, 0, 0) -- Red for non-walkable
-                elseif cell.isWalkable == MIXED then
-                    love.graphics.setColor(1, 1, 0) -- Yellow for mixed
-                else
+                    love.graphics.rectangle("fill", x, y, cellSize, cellSize)
+                elseif value == tostring(WALKABLE) then
                     love.graphics.setColor(0, 1, 0) -- Green for walkable
-                end
-                love.graphics.rectangle("fill", x, y, cellSize, cellSize)
+                    love.graphics.rectangle("fill", x, y, cellSize, cellSize)
+                else
+                    -- For mixed cells, parse the run-length encoded pixel data
+                    love.graphics.setColor(1, 1, 0) -- Yellow for mixed cell background
+                    love.graphics.rectangle("fill", x, y, cellSize, cellSize)
 
-                -- Draw individual walkable pixels if the cell is mixed
-                if cell.isWalkable == MIXED then
-                    for _, pixel in ipairs(cell.data) do
-                        local px, py = pixel[1], pixel[2]
-                        love.graphics.setColor(1, 1, 1) -- White for walkable pixels
-                        love.graphics.points(px, py)
+                    -- Parse the run-length encoded pixel data
+                    local pixels = {}
+                    for part in value:gmatch("[^,]+") do
+                        local count, pixelValue = part:match("(%d+)x(%d+)")
+                        if count and pixelValue then
+                            count = tonumber(count)
+                            pixelValue = tonumber(pixelValue)
+                            for i = 1, count do
+                                table.insert(pixels, pixelValue)
+                            end
+                        end
+                    end
+
+                    -- Render each pixel in the cell
+                    for i, pixelValue in ipairs(pixels) do
+                        local px = x + ((i - 1) % cellSize)
+                        local py = y + math.floor((i - 1) / cellSize)
+                        if pixelValue == 1 then
+                            love.graphics.setColor(1, 1, 1) -- White for walkable pixels
+                            love.graphics.points(px, py)
+                        else
+                            love.graphics.setColor(0, 0, 0) -- Black for non-walkable pixels
+                            love.graphics.points(px, py)
+                        end
                     end
                 end
             end
@@ -192,7 +255,7 @@ function love.draw()
             "Status: %s\nProgress: %.2f%%\nCells Processed: %d",
             sanitizeUTF8(state.status),
             state.progress * 100,
-            #state.collisionData.cells * #state.collisionData.cells[1]
+            #collisionData * (collisionData[1] and #collisionData[1] or 0)
         )
         love.graphics.print(debugText, 10, 10)
     else
@@ -202,36 +265,40 @@ function love.draw()
     end
 end
 
-function saveCollisionData(data, path)
-    local file = io.open(path, "w")
+-- Helper function to perform run-length encoding
+function runLengthEncode(pixels)
+    local encoded = {}
+    local count = 1
+    local current = pixels[1]
+
+    for i = 2, #pixels do
+        if pixels[i] == current then
+            count = count + 1
+        else
+            table.insert(encoded, string.format("%dx%d", count, current))
+            current = pixels[i]
+            count = 1
+        end
+    end
+
+    table.insert(encoded, string.format("%dx%d", count, current))
+    return table.concat(encoded, ",")
+end
+
+function saveCollisionData(buffer, path)
+    local file = io.open(path, "w+")
     if not file then
         state.status = "Failed to save collision data: " .. path
         return
     end
 
-    for gridX, row in pairs(data.cells) do
-        for gridY, cell in pairs(row) do
-            -- Write the custom format: <grid_x>_<grid_y>_<binary_pixel_data>
-            local binaryString = ""
-            for py = cell.y, cell.y + data.cellSize - 1 do
-                for px = cell.x, cell.x + data.cellSize - 1 do
-                    -- Clamp pixel coordinates to the image bounds
-                    local clampedX = math.min(math.max(px, 0), state.imageData:getWidth() - 1)
-                    local clampedY = math.min(math.max(py, 0), state.imageData:getHeight() - 1)
 
-                    -- Get the pixel color
-                    local r, g, b, a = state.imageData:getPixel(clampedX, clampedY)
-                    local isWhite = (r == 1 and g == 1 and b == 1)
-                    binaryString = binaryString .. (isWhite and "1" or "0")
-                end
-            end
-            local line = string.format("%d_%d_%s\n", gridX - 1, gridY - 1, binaryString)
-            file:write(line)
-        end
-    end
+	file:write(FILE_BUFFER)
 
     file:close()
+	FILE_BUFFER =''
 end
+
 
 -- Helper function to sanitize UTF-8 strings
 function sanitizeUTF8(str)
