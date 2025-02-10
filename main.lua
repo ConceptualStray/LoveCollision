@@ -123,9 +123,6 @@ function love.update(dt)
             cell.isWalkable = WALKABLE
         end
 
-        -- Add the cell to the collision data
-
-
         -- Append the cell data to the FILE_BUFFER
         if cell.isWalkable == NON_WALKABLE then
             FILE_BUFFER=FILE_BUFFER .. string.format("%d,%d,%d\n", gridX - 1, gridY - 1, NON_WALKABLE)
